@@ -1,0 +1,20 @@
+# vaultpull configuration file
+# Copy this file to vaultpull.yaml and fill in your values.
+
+# Address of your HashiCorp Vault instance.
+vault_addr: http://127.0.0.1:8200
+
+# Vault token used for authentication.
+# Prefer setting VAULT_TOKEN env var and referencing it here,
+# or use a secrets manager to inject this value.
+vault_token: "<your-vault-token>"
+
+# List of secret-to-env-file mappings.
+# vault_path: KV v2 path in Vault (e.g. secret/data/myapp)
+# env_file:   local path where the .env file will be written
+mappings:
+  - vault_path: secret/data/myapp/production
+    env_file: .env
+
+  - vault_path: secret/data/myapp/database
+    env_file: .env.database
