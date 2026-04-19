@@ -2,48 +2,50 @@ package runner
 
 import (
 	"fmt"
+	"log"
 
-	"github.com/vaultpull/internal/config"
-	"github.com/vaultpull/internal/vault"
-	"github.com/vaultpull/internal/writer"
+	"github.com/yourorg/vaultpull/internal/audit"
+	"github.com/yourorg/vaultpull/internal/config"
+	"github.com/yourorg/vaultpull/internal/vault"
+	"github.com/yourorg/vaultpull/internal/writer"
 )
 
-// Result holds the outcome of syncing a single mapping.
-type Result struct {
-	EnvFile string
-	Written int
-	Err     error
-}
-
-// Run executes the full sync: fetch secrets from Vault and write .env files
-// for every mapping defined in cfg.
-func Run(cfg *config.Config) []Result {
+// Run executes the full sync: fetch secrets from Vault and write .env files.
+func Run(cfg *config.Config, auditLog string) error {
 	client, err := vault.NewClient(cfg.VaultAddr, cfg.VaultToken)
 	if err != nil {
-		return []Result{{Err: fmt.Errorf("vault client: %w", err)}}
+		return fmt.Errorf("runner: vault client: %w", err)
 	}
 
-	results := make([]Result, 0, len(cfg.Mappings))
+	var logger *audit.Logger
+	if auditLog != "" {
+		logger, err = audit.New(auditLog)
+		if err != nil {
+			return fmt.Errorf("runner: audit logger: %w", err)
+		}
+		defer logger.Close()
+	}
 
 	for _, m := range cfg.Mappings {
-		r := Result{EnvFile: m.EnvFile}
-
-		secrets, err := vault.FetchAll(client, m.Secrets)
-		if err != nil {
-			r.Err = fmt.Errorf("fetch %s: %w", m.EnvFile, err)
-			results = append(results, r)
-			continue
+		secrets, fetchErr := vault.FetchAll(client, m.VaultPath)
+		status := "ok"
+		msg := ""
+		if fetchErr != nil {
+			status = "error"
+			msg = fetchErr.Error()
+			log.Printf("[warn] fetch %s: %v", m.VaultPath, fetchErr)
+		} else {
+			if writeErr := writer.MergeEnvFile(m.EnvFile, secrets); writeErr != nil {
+				status = "error"
+				msg = writeErr.Error()
+				log.Printf("[warn] write %s: %v", m.EnvFile, writeErr)
+			}
 		}
-
-		if err := writer.MergeEnvFile(m.EnvFile, secrets); err != nil {
-			r.Err = fmt.Errorf("write %s: %w", m.EnvFile, err)
-			results = append(results, r)
-			continue
+		if logger != nil {
+			if logErr := logger.Log("sync", m.VaultPath, m.EnvFile, status, msg); logErr != nil {
+				log.Printf("[warn] audit log: %v", logErr)
+			}
 		}
-
-		r.Written = len(secrets)
-		results = append(results, r)
 	}
-
-	return results
+	return nil
 }
