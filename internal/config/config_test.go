@@ -72,3 +72,16 @@ mappings: []
 		t.Fatal("expected validation error for empty mappings")
 	}
 }
+
+func TestLoad_MissingVaultToken(t *testing.T) {
+	path := writeTemp(t, `
+vault_addr: http://127.0.0.1:8200
+mappings:
+  - vault_path: secret/data/app
+    env_file: .env
+`)
+	_, err := config.Load(path)
+	if err == nil {
+		t.Fatal("expected validation error for missing vault_token")
+	}
+}
