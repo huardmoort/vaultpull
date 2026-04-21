@@ -14,7 +14,7 @@ type RotateOptions struct {
 	// If zero, defaults to 500.
 	MaxEntries int
 	// ArchiveSuffix is appended to the original path to form the archive name.
-	// If empty, defaults to "." + RFC3339 timestamp.
+	// If empty, defaults to "." + compact UTC timestamp (e.g. .20060102T150405Z).
 	ArchiveSuffix string
 }
 
@@ -22,6 +22,9 @@ type RotateOptions struct {
 // archive file, and rewrites the original file with only the newest entries.
 // It returns the number of entries archived and the archive path (empty if
 // nothing was archived).
+//
+// If the archive file already exists (e.g. two rotations within the same
+// second), Rotate returns an error rather than silently overwriting it.
 func Rotate(path string, opts RotateOptions) (archived int, archivePath string, err error) {
 	if opts.MaxEntries <= 0 {
 		opts.MaxEntries = 500
@@ -44,6 +47,11 @@ func Rotate(path string, opts RotateOptions) (archived int, archivePath string, 
 		suffix = "." + time.Now().UTC().Format("20060102T150405Z")
 	}
 	archivePath = path + suffix
+
+	// Guard against overwriting an existing archive (e.g. rapid successive rotations).
+	if _, statErr := os.Stat(archivePath); statErr == nil {
+		return 0, "", fmt.Errorf("rotate: archive already exists: %s", archivePath)
+	}
 
 	old := entries[:len(entries)-opts.MaxEntries]
 	keep := entries[len(entries)-opts.MaxEntries:]
