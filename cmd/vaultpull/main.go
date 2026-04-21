@@ -21,6 +21,12 @@ func main() {
 
 	results := runner.Run(cfg)
 
+	os.Exit(printResults(results))
+}
+
+// printResults writes a summary of each run result to stdout or stderr and
+// returns a non-zero exit code if any result contained an error.
+func printResults(results []runner.Result) int {
 	exitCode := 0
 	for _, r := range results {
 		if r.Err != nil {
@@ -30,6 +36,5 @@ func main() {
 			fmt.Printf("[OK]   %s (%d secret(s) written)\n", r.EnvFile, r.Written)
 		}
 	}
-
-	os.Exit(exitCode)
+	return exitCode
 }
