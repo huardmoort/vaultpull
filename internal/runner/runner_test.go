@@ -1,75 +1,116 @@
-package runner_test
+package runner
 
 import (
-	"net/http"
-	"net/http/httptest"
-	"os"
+	"fmt"
 	"path/filepath"
-	"strings"
 	"testing"
 
-	"github.com/vaultpull/internal/config"
-	"github.com/vaultpull/internal/runner"
+	"github.com/yourusername/vaultpull/internal/config"
+	"github.com/yourusername/vaultpull/internal/lock"
 )
 
-func newFakeVault(t *testing.T) *httptest.Server {
-	t.Helper()
-	return httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		w.Header().Set("Content-Type", "application/json")
-		w.WriteHeader(http.StatusOK)
-		_, _ = w.Write([]byte(`{"data":{"API_KEY":"abc123","DB_PASS":"secret"}}`))
-	}))
+type fakeVault struct {
+	data map[string]map[string]string
+	err  error
+}
+
+func (f *fakeVault) ReadSecret(path string) (map[string]string, error) {
+	if f.err != nil {
+		return nil, f.err
+	}
+	if v, ok := f.data[path]; ok {
+		return v, nil
+	}
+	return nil, fmt.Errorf("not found: %s", path)
+}
+
+func newFakeVault(data map[string]map[string]string) *fakeVault {
+	return &fakeVault{data: data}
 }
 
 func TestRun_Success(t *testing.T) {
-	srv := newFakeVault(t)
-	defer srv.Close()
-
 	dir := t.TempDir()
 	envFile := filepath.Join(dir, ".env")
 
 	cfg := &config.Config{
-		VaultAddr:  srv.URL,
-		VaultToken: "test-token",
+		VaultAddr: "http://127.0.0.1:8200",
 		Mappings: []config.Mapping{
 			{
 				EnvFile: envFile,
-				Secrets: []config.SecretRef{
-					{Path: "secret/myapp", Key: "API_KEY", EnvVar: "API_KEY"},
+				Secrets: []config.SecretMapping{
+					{VaultPath: "secret/app", EnvKey: "DB_URL", VaultKey: "url"},
 				},
 			},
 		},
 	}
 
-	results := runner.Run(cfg)
+	client := newFakeVault(map[string]map[string]string{
+		"secret/app": {"url": "postgres://localhost/db"},
+	})
 
+	results, err := runWithClient(cfg, client)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
 	if len(results) != 1 {
 		t.Fatalf("expected 1 result, got %d", len(results))
 	}
 	if results[0].Err != nil {
-		t.Fatalf("unexpected error: %v", results[0].Err)
+		t.Errorf("expected no error in result, got: %v", results[0].Err)
 	}
-	if results[0].Written == 0 {
-		t.Error("expected at least one secret written")
-	}
-
-	data, err := os.ReadFile(envFile)
-	if err != nil {
-		t.Fatalf("env file not created: %v", err)
-	}
-	if !strings.Contains(string(data), "API_KEY") {
-		t.Error("env file missing API_KEY")
+	if results[0].Keys != 1 {
+		t.Errorf("expected 1 key written, got %d", results[0].Keys)
 	}
 }
 
-func TestRun_BadVaultAddr(t *testing.T) {
+func TestRun_FetchError(t *testing.T) {
+	dir := t.TempDir()
+	envFile := filepath.Join(dir, ".env")
+
 	cfg := &config.Config{
-		VaultAddr:  "http://127.0.0.1:0",
-		VaultToken: "x",
-		Mappings:   []config.Mapping{{EnvFile: "/tmp/x.env"}},
+		Mappings: []config.Mapping{
+			{
+				EnvFile: envFile,
+				Secrets: []config.SecretMapping{
+					{VaultPath: "secret/missing", EnvKey: "X", VaultKey: "x"},
+				},
+			},
+		},
 	}
-	results := runner.Run(cfg)
-	if len(results) == 0 {
-		t.Fatal("expected at least one result")
+
+	client := &fakeVault{err: fmt.Errorf("vault unavailable")}
+	results, err := runWithClient(cfg, client)
+	if err != nil {
+		t.Fatalf("unexpected top-level error: %v", err)
+	}
+	if results[0].Err == nil {
+		t.Error("expected result error for failed fetch")
+	}
+}
+
+func TestRun_LockedFile(t *testing.T) {
+	dir := t.TempDir()
+	envFile := filepath.Join(dir, ".env")
+
+	// Pre-acquire the lock to simulate a concurrent process.
+	lf, err := lock.Acquire(envFile)
+	if err != nil {
+		t.Fatalf("setup lock failed: %v", err)
+	}
+	defer lf.Release()
+
+	cfg := &config.Config{
+		Mappings: []config.Mapping{
+			{EnvFile: envFile, Secrets: []config.SecretMapping{}},
+		},
+	}
+
+	client := newFakeVault(nil)
+	results, err := runWithClient(cfg, client)
+	if err != nil {
+		t.Fatalf("unexpected top-level error: %v", err)
+	}
+	if results[0].Err == nil {
+		t.Error("expected lock contention error in result")
 	}
 }
